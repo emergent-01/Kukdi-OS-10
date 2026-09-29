@@ -9,7 +9,7 @@ import json
 from typing import Dict, List, Any
 
 # Base URL from frontend/.env
-BASE_URL = "https://kukdi-verify-state.preview.emergentagent.com/api"
+BASE_URL = "https://github-alive.preview.emergentagent.com/api"
 
 # Test results tracking
 test_results = {

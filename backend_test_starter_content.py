@@ -9,7 +9,7 @@ import json
 from typing import Dict, List, Any
 
 # Base URL from frontend/.env
-BASE_URL = "https://ee0c46ea-5c8a-4729-b28d-c311bd2da48e.preview.emergentagent.com/api"
+BASE_URL = "https://github-alive.preview.emergentagent.com/api"
 
 # Expected story titles
 EXPECTED_STORY_TITLES = [
