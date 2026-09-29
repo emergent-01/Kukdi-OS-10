@@ -12,6 +12,7 @@ import Reflection from "@/pages/Reflection";
 import Stories from "@/pages/Stories";
 import Intake from "@/pages/Intake";
 import More from "@/pages/More";
+import Groundwork from "@/pages/Groundwork";
 
 function App() {
   return (
@@ -29,6 +30,7 @@ function App() {
           <Route path="/stories" element={<Stories />} />
           <Route path="/intake" element={<Intake />} />
           <Route path="/more" element={<More />} />
+          <Route path="/groundwork" element={<Groundwork />} />
         </Routes>
       </Layout>
     </BrowserRouter>
