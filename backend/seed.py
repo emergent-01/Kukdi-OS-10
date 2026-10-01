@@ -6,7 +6,7 @@ the memory collection is empty.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 
 from database import db
 from models import COMPANY_STAGES, new_id, now_iso
@@ -171,16 +171,12 @@ async def _seed_demo_DISABLED(force: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# One-time real-user provisioning: wipe all demo content and preload the real
-# companies + prep-circle candidate people. Idempotent via a settings flag so a
-# restart never re-wipes real data the user has since added.
+# Real-user provisioning: fill the baseline for a fresh/empty DB WITHOUT ever
+# deleting or overwriting anything. Strictly additive and idempotent — each
+# baseline item is inserted only if a document with the same name/title does
+# not already exist. Safe to run on every startup; existing user data (stories,
+# confirmations, prep-circle choices, settings) always survives a restart.
 # ---------------------------------------------------------------------------
-
-WIPE_COLLECTIONS = [
-    "memories", "candidates", "conversations", "messages",
-    "companies", "prep_items", "people", "events", "knowledge",
-    "stories", "countdowns",
-]
 
 REAL_COMPANIES = [
     ("Google", "dream"), ("Microsoft", "dream"), ("Amazon", "dream"),
@@ -195,27 +191,97 @@ REAL_PREP_CANDIDATES = [
     "Rasukh", "Prem", "Samparan", "Shruthi", "Pratham", "Amol",
 ]
 
+# Her 4 STAR story drafts — part of the baseline so a fresh DB has them too.
+# Warm, in-voice action text; no square brackets. Shape matches /api/stories.
+REAL_STORIES = [
+    {
+        "title": "Doubling the Toastmasters budget",
+        "situation": "As a leader in Thapar Toastmasters, the club needed significantly more budget than the previous year to run a bigger slate of public-speaking events.",
+        "task": "Convince the university authorities to approve a budget increase of over 100%.",
+        "action": "Presented a clear vision of what public speaking at Thapar could look like that year and walked the authorities through the impact, winning their buy-in. — this part is yours to shape.",
+        "result": "Secured a budget increase of more than 100% over the prior year.",
+        "themes": ["Influence", "Execution"],
+        "tags": ["Toastmasters", "leadership"],
+    },
+    {
+        "title": "Winning HACKOWASP with a contactless-shopping prototype",
+        "situation": "During the COVID-19 pandemic, HACKOWASP 2.1 brought together 15+ teams to solve real problems.",
+        "task": "Design and build a user-centric solution that stood out.",
+        "action": "Built a contactless-shopping interface prototype focused on the user experience of shopping safely during the pandemic. — this part is yours to shape.",
+        "result": "Earned first position among 15+ teams.",
+        "themes": ["Customer Focus", "Execution"],
+        "tags": ["hackathon", "product"],
+    },
+    {
+        "title": "Handling conflict in the OWASP chapter",
+        "situation": "A miscommunication and conflict arose within the OWASP student chapter at Thapar.",
+        "task": "Step in and resolve the situation while keeping the team functioning.",
+        "action": "This is yours to shape — add what you did here, in your own words.",
+        "result": "Resolved the conflict and kept the chapter on track.",
+        "themes": ["Conflict", "Leadership"],
+        "tags": ["OWASP", "teamwork"],
+    },
+    {
+        "title": "Teaching on mobile-only during COVID",
+        "situation": "While volunteering as a math tutor for underprivileged Class 9-10 students during COVID-19, students had access to phones only, under severe resource constraints.",
+        "task": "Keep learning interactive and effective despite the constraints.",
+        "action": "Innovated a low-cost DIY stylus and adapted problem-solving sessions to work on phones, improving engagement. — this part is yours to shape.",
+        "result": "Sustained interactive learning over ~8 months for students who otherwise couldn't access it.",
+        "themes": ["Ambiguity", "Customer Focus"],
+        "tags": ["tutoring", "impact"],
+    },
+]
+
+
+def _future_iso(month: int, day: int) -> str:
+    """Next occurrence of month/day at 09:00 UTC (this year or next)."""
+    today = datetime.now(timezone.utc).date()
+    year = today.year
+    if date(year, month, day) < today:
+        year += 1
+    return datetime(year, month, day, 9, 0, tzinfo=timezone.utc).isoformat()
+
+
+# The 2 tentative placement-season events — baseline, additive.
+REAL_EVENTS = [
+    {
+        "type": "deadline",
+        "title": "Company registrations — expected mid-September (tentative)",
+        "month": 9, "day": 15,
+        "notes": "College hasn't officially announced yet — update when confirmed.",
+    },
+    {
+        "type": "placement",
+        "title": "Interviews — expected around November (tentative)",
+        "month": 11, "day": 5,
+        "notes": "Tentative — the college hasn't announced final dates. Update when known.",
+    },
+]
+
 
 async def provision_real_data(force: bool = False) -> dict:
-    settings = await db.settings.find_one({"id": "singleton"}, {"_id": 0})
-    if settings and settings.get("provisioned") and not force:
-        return {"provisioned": False, "reason": "already provisioned"}
-
-    for c in WIPE_COLLECTIONS:
-        await db[c].delete_many({})
-
+    """Idempotent, strictly additive baseline fill. Never wipes or overwrites."""
+    added = {"companies": 0, "people": 0, "stories": 0, "events": 0}
     default_stage = COMPANY_STAGES[0]  # earliest stage
-    companies = [
+
+    # Companies — insert only those whose name is not already present.
+    existing_companies = set(await db.companies.distinct("name"))
+    new_companies = [
         {
             "id": new_id(), "name": name, "tier": tier, "role": "",
             "stage": default_stage, "location": "", "notes": "", "next_action": "",
             "created": now_iso(), "updated": now_iso(),
         }
         for name, tier in REAL_COMPANIES
+        if name not in existing_companies
     ]
-    await db.companies.insert_many(companies)
+    if new_companies:
+        await db.companies.insert_many(new_companies)
+        added["companies"] = len(new_companies)
 
-    people = [
+    # Prep-circle candidates — unconfirmed by design (prep_group False).
+    existing_people = set(await db.people.distinct("name"))
+    new_people = [
         {
             "id": new_id(), "name": name, "relation": "Peer / prep group",
             "company": "", "birthday": "", "notes": "", "important": [], "tags": [],
@@ -224,14 +290,61 @@ async def provision_real_data(force: bool = False) -> dict:
             "created": now_iso(), "updated": now_iso(),
         }
         for name in REAL_PREP_CANDIDATES
+        if name not in existing_people
     ]
-    await db.people.insert_many(people)
+    if new_people:
+        await db.people.insert_many(new_people)
+        added["people"] = len(new_people)
 
-    # Clean settings singleton (drop any demo fields), mark provisioned.
-    await db.settings.delete_many({})
-    await db.settings.insert_one({
-        "id": "singleton", "home_state_override": None,
-        "provisioned": True, "updated": now_iso(),
-    })
+    # Story drafts — insert only those whose title is not already present.
+    existing_stories = set(await db.stories.distinct("title"))
+    new_stories = [
+        {
+            "id": new_id(), "title": s["title"],
+            "situation": s["situation"], "task": s["task"],
+            "action": s["action"], "result": s["result"],
+            "themes": s["themes"], "tags": s["tags"],
+            "companies_used": [], "status": "draft", "feedback": "",
+            "created": now_iso(), "updated": now_iso(),
+        }
+        for s in REAL_STORIES
+        if s["title"] not in existing_stories
+    ]
+    if new_stories:
+        await db.stories.insert_many(new_stories)
+        added["stories"] = len(new_stories)
 
-    return {"provisioned": True, "companies": len(companies), "people": len(people)}
+    # Tentative events — insert only those whose title is not already present.
+    existing_events = set(await db.events.distinct("title"))
+    new_events = [
+        {
+            "id": new_id(), "type": e["type"], "title": e["title"],
+            "start": _future_iso(e["month"], e["day"]), "end": None,
+            "location": "", "course": "", "notes": e["notes"],
+            "done": False, "created": now_iso(),
+        }
+        for e in REAL_EVENTS
+        if e["title"] not in existing_events
+    ]
+    if new_events:
+        await db.events.insert_many(new_events)
+        added["events"] = len(new_events)
+
+    # Mark provisioned WITHOUT wiping the settings singleton (preserve any
+    # home_state_override or other fields the user has set).
+    await db.settings.update_one(
+        {"id": "singleton"},
+        {
+            "$set": {"provisioned": True, "updated": now_iso()},
+            "$setOnInsert": {"home_state_override": None},
+        },
+        upsert=True,
+    )
+
+    totals = {
+        "companies": await db.companies.count_documents({}),
+        "people": await db.people.count_documents({}),
+        "stories": await db.stories.count_documents({}),
+        "events": await db.events.count_documents({}),
+    }
+    return {"provisioned": True, "added": added, "totals": totals}

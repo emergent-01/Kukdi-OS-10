@@ -105,6 +105,20 @@
 user_problem_statement: "Additive prep-circle feature. (A) Make prep-circle real on People: confirmed members visibly distinct (grouped under PREP CIRCLE), editable strengths (INTERVIEW_COMPETENCIES chips + note), and a mock-sessions log. (B) A reasoning layer that surfaces ONE gentle prep nudge on Dream Offer (offer-phrased, see-more for rest) + a one-line doorway on Home. Single-user, no auth. Additive only."
 
 backend:
+  - task: "Safe additive provisioning + story/event baseline re-seed"
+    implemented: true
+    working: true
+    file: "backend/seed.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: "Rewrote provision_real_data to be strictly additive + idempotent. REMOVED collection-wipe loop entirely. Each baseline item (companies, people, stories, events) inserted only if name/title doesn't already exist. Settings singleton upserted (preserves user data). Runs safely on every startup. Added 4 STAR story drafts + 2 tentative events to baseline. No routes/model/design changes."
+        -working: true
+        -agent: "testing"
+        -comment: "✅ ALL TESTS PASSED. Verified: (1) GET /api/stories returns EXACTLY 4 drafts with correct titles, status=draft, non-empty STAR fields, themes+tags populated, and CRITICALLY NO square brackets in action text ✓. (2) GET /api/dream/overview returns 14 companies ✓. (3) GET /api/people returns 12 people, ALL unconfirmed prep candidates (prep_group=false, prep_candidate=true, strengths=[]) ✓. (4) GET /api/calendar returns 2 tentative events (deadline + placement, both done=false) ✓. (5) NO _id leaks in any response ✓. (6) IDEMPOTENCY/NO-WIPE VERIFIED: Restarted backend, counts STABLE (stories=4, companies=14, people=12, events=2), no duplicates, no data loss ✓. Backend logs confirm second provisioning added 0 items (strict idempotency) ✓. Root-cause fix is PRODUCTION-READY."
   - task: "People PATCH/POST persist prep_group, strengths, strength_note"
     implemented: true
     working: true
@@ -351,13 +365,13 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.7"
-  test_sequence: 6
-  run_ui: true
+  version: "1.8"
+  test_sequence: 7
+  run_ui: false
 
 test_plan:
   current_focus:
-    - "All features tested and working"
+    - "Safe additive provisioning + story/event baseline re-seed"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -383,5 +397,11 @@ agent_communication:
 
     -agent: "testing"
     -message: "⚠️ TESTING COMPLETE - PART 1 PASSED, PART 2 HAS CRITICAL ISSUE. Comprehensive UI testing completed with 1 critical bug found. PART 1 (App Reveal) - ALL PASSED: (1) Browser tab title 'Kukdi' ✓. (2) Desktop wordmark 'Kukdi' ✓, tagline 'A PERSONAL OS' displays correctly in UI (minor test timing issue noted but visual confirmation shows correct uppercase rendering) ✓. (3) Desktop nav rail contains EXACTLY the required items in order: Home, Groundwork, Reflection, Calendar, People, More ✓, plus Talk to Kukdi ✓. Dream Offer and Stories correctly NOT in rail ✓. Intake correctly NOT in rail ✓. (4) Mobile nav mirrors desktop with all -mobile testids present ✓. (5) More page (/more) renders with more-page testid ✓. All three links work: Day One Intake (more-intake → /intake) ✓, Memory (more-memory → /memory) ✓, Knowledge (more-knowledge → /knowledge) ✓. Each page loads successfully. (6) Reflection page accessible from nav rail and renders ✓. (7) No console errors detected ✓. PART 2 (Groundwork Hub) - CRITICAL ISSUE FOUND: (8) Groundwork page (/groundwork) renders with groundwork-page testid ✓. (9) All 3 sections present: groundwork-dream-section shows 'Google · Microsoft · Amazon' and '14 in your pipeline — 3 dream · 7 target · 4 safe' ✓, groundwork-stories-section shows 'Your story bank is empty — a good place to begin shaping one' ✓, groundwork-prep-circle-section shows 'No one in your prep circle yet — you can bring peers in from People whenever you're ready' ✓. (10) All 3 open links work: groundwork-open-dream → /dream-offer ✓, groundwork-open-stories → /stories ✓, groundwork-open-people → /people ✓. All full pages render normally. (11) ❌ CRITICAL BUG - PREP-CIRCLE LENS NOT WORKING: Tested with person 'Amol' (ID: 33c944c2-2e57-4b24-bd6d-68802d1ff64b). Added Amol to prep circle on /people page (toggle clicked successfully). Navigated to /groundwork. EXPECTED: Amol should appear in groundwork-prep-circle-section with testid groundwork-circle-person-{id}. ACTUAL: Amol does NOT appear. Section still shows empty state. ROOT CAUSE: Groundwork.jsx useEffect (lines 47-72) has empty dependency array [], so it only fetches data once on mount. When navigating away and back, the component doesn't remount (React Router keeps it in memory), so stale data is displayed. FIX NEEDED: Add mechanism to re-fetch data when component comes into view - either use location as dependency, add a key prop to force remount, or use React Router's useEffect with location dependency. (12) Smoke tests: Home ✓, Calendar ✓, Memory ✓, Knowledge ✓ all load without errors. NO console errors detected. The prep-circle lens MUST be fixed to be a true real-time filtered view of the single people collection."
+    -agent: "main"
+    -message: "PROVISIONING ROOT-CAUSE FIX (backend data/logic only; no routes/model/design/ai_engine changes). Rewrote provision_real_data in seed.py: (a) REMOVED the collection-wipe loop entirely — it must NEVER delete/overwrite; (b) now strictly additive + idempotent — inserts each baseline item only if a doc with the same name (companies/people) or title (stories/events) doesn't already exist; (c) added her 4 STAR story drafts + 2 tentative calendar events to the baseline; (d) settings singleton is now upserted (preserves home_state_override) instead of delete+insert; (e) runs safely on every startup (removed early-return on provisioned flag). Already re-seeded current DB on restart (added 4 stories + 2 events; companies/people unchanged). BACKEND TEST SCOPE (no frontend): (1) GET /api/stories → EXACTLY 4 drafts with titles 'Doubling the Toastmasters budget', 'Winning HACKOWASP with a contactless-shopping prototype', 'Handling conflict in the OWASP chapter', 'Teaching on mobile-only during COVID'; each status=draft, non-empty situation/task/action/result, themes+tags populated, NO square brackets '[' or ']' in action text. (2) GET /api/dream/overview → 14 companies. (3) GET /api/people → 12 people, ALL unconfirmed (prep_group=false, prep_candidate=true), strengths empty. (4) GET /api/calendar → the 2 tentative events present (deadline 'Company registrations…', placement 'Interviews…'), done=false. (5) IDEMPOTENCY/NO-WIPE: this is the critical regression to verify — nothing should duplicate or disappear across restarts. If a restart can be triggered, confirm counts stay stories=4, companies=14, people=12, events=2 (no duplicates, no data loss). (6) NO _id leaks in any response. Do NOT mutate data (don't confirm people / add companies). Design/persona/routes unchanged."
+    -agent: "testing"
+    -message: "✅ PROVISIONING ROOT-CAUSE FIX VERIFIED - ALL TESTS PASSED. Comprehensive backend-only verification completed successfully. (1) GET /api/stories returns EXACTLY 4 story drafts with correct titles ('Doubling the Toastmasters budget', 'Winning HACKOWASP with a contactless-shopping prototype', 'Handling conflict in the OWASP chapter', 'Teaching on mobile-only during COVID') ✓. Each story verified: status=draft ✓, non-empty STAR fields (situation/task/action/result) ✓, themes populated (2 each) ✓, tags populated (2 each) ✓, and CRITICALLY NO square brackets '[' or ']' in action text ✓. (2) GET /api/dream/overview returns exactly 14 companies ✓. (3) GET /api/people returns exactly 12 people ✓, ALL are unconfirmed prep candidates: prep_group=false ✓, prep_candidate=true ✓, strengths=[] (empty) ✓. (4) GET /api/calendar returns 2 tentative events with exact titles: 'Company registrations — expected mid-September (tentative)' (type=deadline, done=false) ✓ and 'Interviews — expected around November (tentative)' (type=placement, done=false) ✓. (5) NO _id leaks detected in ANY response ✓. (6) IDEMPOTENCY/NO-WIPE VERIFIED ✓: Restarted backend via supervisorctl, waited 8s for startup provisioning. After restart: stories count STABLE at 4 (no duplicates) ✓, companies STABLE at 14 ✓, people STABLE at 12 ✓, events STABLE at 2 ✓. Verified 4 unique story titles (no duplicates) ✓. Backend logs confirm: first provisioning added 4 stories + 2 events; second provisioning (after restart) added 0 of everything - proving strict idempotency ✓. NO data loss, NO duplicates, NO overwrites. The root-cause fix is PRODUCTION-READY. Data left clean (no mutations)."
 
 
+    -agent: "testing"
+    -message: "✅ PROVISIONING FIX VERIFIED — ALL BACKEND CHECKS PASSED. (1) GET /api/stories = EXACTLY 4 drafts, correct titles, status=draft, non-empty STAR fields, themes+tags populated, NO square brackets in action text. (2) /api/dream/overview = 14 companies. (3) /api/people = 12, ALL unconfirmed (prep_group=false, prep_candidate=true, strengths=[]). (4) /api/calendar = 2 tentative events (deadline + placement, done=false). (5) NO _id leaks anywhere. (6) IDEMPOTENCY/NO-WIPE (key regression): restarted backend via supervisorctl, counts STABLE (stories=4, companies=14, people=12, events=2), no duplicates, no data loss; logs confirm 2nd provisioning added 0 items. Root-cause fix is production-ready; no mutations made during testing."
