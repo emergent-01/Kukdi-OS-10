@@ -71,6 +71,11 @@ export default function Calendar() {
 
       {/* Schedule */}
       <div className="space-y-10 mt-8" data-testid="calendar-list">
+        {Object.keys(grouped).length === 0 && (
+          <p className="font-editorial text-2xl text-[#8A8F8C] italic leading-snug max-w-xl" data-testid="calendar-empty">
+            Nothing on the calendar yet. When you know a date, add it and I'll keep it in view for you.
+          </p>
+        )}
         {Object.entries(grouped).map(([day, events]) => (
           <div key={day}>
             <h2 className="text-xs tracking-[0.18em] uppercase text-[#8A8F8C] mb-4">{day}</h2>

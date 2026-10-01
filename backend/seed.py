@@ -242,21 +242,9 @@ def _future_iso(month: int, day: int) -> str:
     return datetime(year, month, day, 9, 0, tzinfo=timezone.utc).isoformat()
 
 
-# The 2 tentative placement-season events — baseline, additive.
-REAL_EVENTS = [
-    {
-        "type": "deadline",
-        "title": "Company registrations — expected mid-September (tentative)",
-        "month": 9, "day": 15,
-        "notes": "College hasn't officially announced yet — update when confirmed.",
-    },
-    {
-        "type": "placement",
-        "title": "Interviews — expected around November (tentative)",
-        "month": 11, "day": 5,
-        "notes": "Tentative — the college hasn't announced final dates. Update when known.",
-    },
-]
+# Calendar events are intentionally NOT provisioned — she adds her own real
+# dates. (Previously held two tentative placeholder events; removed by design.)
+REAL_EVENTS = []
 
 
 async def provision_real_data(force: bool = False) -> dict:

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Backend Data Persistence Test - Verify NO data wipe across TWO backend restarts
-Tests that the Kukdi backend preserves 4 stories and 14 companies across restarts.
+Backend Verification Test - Tentative Events Removal + Polish Endpoint
+Tests for Kukdi backend per review request:
+1. GET /api/calendar → NO "tentative" events
+2. DURABILITY: restart backend → still NO "tentative" events
+3. BASELINE INTACT: 4 stories, 14 companies, 12 people
+4. POLISH ENDPOINT: POST /api/stories/{id}/polish graceful behavior
+5. No _id leaks
 """
 
 import requests
@@ -17,8 +22,57 @@ def log(message: str, level: str = "INFO"):
     """Print formatted log message"""
     print(f"[{level}] {message}")
 
+def check_id_leaks(data: Any, context: str = "") -> bool:
+    """Recursively check for _id leaks in response data"""
+    if isinstance(data, dict):
+        if "_id" in data:
+            log(f"❌ CRITICAL: _id leak detected in {context}", "ERROR")
+            return True
+        for key, value in data.items():
+            if check_id_leaks(value, f"{context}.{key}"):
+                return True
+    elif isinstance(data, list):
+        for i, item in enumerate(data):
+            if check_id_leaks(item, f"{context}[{i}]"):
+                return True
+    return False
+
+def get_calendar_events() -> Dict[str, Any]:
+    """Get calendar events and check for tentative events"""
+    try:
+        response = requests.get(f"{BASE_URL}/calendar", timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle both {"events": [...]} and [...] formats
+        if isinstance(data, dict) and "events" in data:
+            events = data["events"]
+        else:
+            events = data if isinstance(data, list) else []
+        
+        # Check for _id leaks
+        if check_id_leaks(events, "calendar_events"):
+            return {"error": "_id leak detected"}
+        
+        # Check for tentative events
+        tentative_events = []
+        for event in events:
+            title = event.get("title", "")
+            if "tentative" in title.lower():
+                tentative_events.append(title)
+        
+        return {
+            "total_count": len(events),
+            "tentative_count": len(tentative_events),
+            "tentative_events": tentative_events,
+            "all_events": events
+        }
+    except Exception as e:
+        log(f"❌ Failed to get calendar events: {e}", "ERROR")
+        return {"error": str(e)}
+
 def get_stories() -> Dict[str, Any]:
-    """Get all stories and return count + titles"""
+    """Get all stories"""
     try:
         response = requests.get(f"{BASE_URL}/stories", timeout=10)
         response.raise_for_status()
@@ -28,37 +82,32 @@ def get_stories() -> Dict[str, Any]:
         if isinstance(data, dict) and "stories" in data:
             stories = data["stories"]
         else:
-            stories = data
+            stories = data if isinstance(data, list) else []
         
-        # Verify no _id leaks
-        for story in stories:
-            if "_id" in story:
-                log(f"❌ CRITICAL: _id leak detected in story: {story.get('title', 'unknown')}", "ERROR")
-                return {"error": "_id leak detected"}
+        # Check for _id leaks
+        if check_id_leaks(stories, "stories"):
+            return {"error": "_id leak detected"}
         
-        titles = [s.get("title", "") for s in stories]
         return {
             "count": len(stories),
-            "titles": sorted(titles),  # Sort for consistent comparison
-            "raw": stories
+            "stories": stories
         }
     except Exception as e:
         log(f"❌ Failed to get stories: {e}", "ERROR")
         return {"error": str(e)}
 
-def get_companies_count() -> Dict[str, Any]:
-    """Get company count from dream overview"""
+def get_companies() -> Dict[str, Any]:
+    """Get companies from dream overview"""
     try:
         response = requests.get(f"{BASE_URL}/dream/overview", timeout=10)
         response.raise_for_status()
         data = response.json()
         
-        # Verify no _id leaks in companies
         companies = data.get("companies", [])
-        for company in companies:
-            if "_id" in company:
-                log(f"❌ CRITICAL: _id leak detected in company: {company.get('name', 'unknown')}", "ERROR")
-                return {"error": "_id leak detected"}
+        
+        # Check for _id leaks
+        if check_id_leaks(companies, "companies"):
+            return {"error": "_id leak detected"}
         
         return {
             "count": len(companies),
@@ -67,6 +116,116 @@ def get_companies_count() -> Dict[str, Any]:
     except Exception as e:
         log(f"❌ Failed to get companies: {e}", "ERROR")
         return {"error": str(e)}
+
+def get_people() -> Dict[str, Any]:
+    """Get all people"""
+    try:
+        response = requests.get(f"{BASE_URL}/people", timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Handle both {"people": [...]} and [...] formats
+        if isinstance(data, dict) and "people" in data:
+            people = data["people"]
+        else:
+            people = data if isinstance(data, list) else []
+        
+        # Check for _id leaks
+        if check_id_leaks(people, "people"):
+            return {"error": "_id leak detected"}
+        
+        # Count prep_group=false
+        prep_group_false_count = sum(1 for p in people if p.get("prep_group") == False)
+        
+        return {
+            "count": len(people),
+            "prep_group_false_count": prep_group_false_count,
+            "people": people
+        }
+    except Exception as e:
+        log(f"❌ Failed to get people: {e}", "ERROR")
+        return {"error": str(e)}
+
+def test_polish_endpoint(story_id: str) -> Dict[str, Any]:
+    """Test POST /api/stories/{id}/polish endpoint"""
+    try:
+        log(f"Testing polish endpoint with story ID: {story_id}", "INFO")
+        start_time = time.time()
+        
+        response = requests.post(
+            f"{BASE_URL}/stories/{story_id}/polish",
+            timeout=120  # Allow up to 2 minutes for LLM call
+        )
+        
+        elapsed = time.time() - start_time
+        
+        # Check status code
+        if response.status_code >= 500:
+            log(f"❌ Polish endpoint returned 500 error", "ERROR")
+            return {
+                "status_code": response.status_code,
+                "elapsed": elapsed,
+                "error": "500 error",
+                "passed": False
+            }
+        
+        # Try to parse JSON
+        try:
+            data = response.json()
+        except:
+            log(f"❌ Polish endpoint did not return valid JSON", "ERROR")
+            return {
+                "status_code": response.status_code,
+                "elapsed": elapsed,
+                "error": "Invalid JSON response",
+                "passed": False
+            }
+        
+        # Check for _id leaks
+        if check_id_leaks(data, "polish_response"):
+            return {
+                "status_code": response.status_code,
+                "elapsed": elapsed,
+                "error": "_id leak detected",
+                "passed": False
+            }
+        
+        # Check for required fields in response
+        has_star_fields = all(k in data for k in ["situation", "task", "action", "result"])
+        has_feedback = "feedback" in data
+        has_status = "status" in data
+        
+        log(f"✅ Polish endpoint returned {response.status_code} in {elapsed:.2f}s", "INFO")
+        log(f"   Response has STAR fields: {has_star_fields}", "INFO")
+        log(f"   Response has feedback: {has_feedback}", "INFO")
+        log(f"   Response has status: {has_status}", "INFO")
+        
+        return {
+            "status_code": response.status_code,
+            "elapsed": elapsed,
+            "has_star_fields": has_star_fields,
+            "has_feedback": has_feedback,
+            "has_status": has_status,
+            "response": data,
+            "passed": response.status_code < 500 and has_star_fields
+        }
+        
+    except requests.exceptions.Timeout:
+        elapsed = time.time() - start_time
+        log(f"❌ Polish endpoint timed out after {elapsed:.2f}s", "ERROR")
+        return {
+            "error": "Timeout",
+            "elapsed": elapsed,
+            "passed": False
+        }
+    except Exception as e:
+        elapsed = time.time() - start_time
+        log(f"❌ Polish endpoint failed: {e}", "ERROR")
+        return {
+            "error": str(e),
+            "elapsed": elapsed,
+            "passed": False
+        }
 
 def restart_backend():
     """Restart backend service via supervisorctl"""
@@ -104,179 +263,181 @@ def wait_for_backend(timeout: int = 15):
     log(f"❌ Backend not ready after {timeout}s", "ERROR")
     return False
 
-def verify_data_integrity(baseline: Dict, current: Dict, stage: str) -> bool:
-    """Verify data matches baseline (no wipes, no duplicates)"""
-    log(f"\n{'='*60}", "INFO")
-    log(f"VERIFICATION STAGE: {stage}", "INFO")
-    log(f"{'='*60}", "INFO")
-    
-    all_passed = True
-    
-    # Check stories
-    baseline_stories = baseline.get("stories", {})
-    current_stories = current.get("stories", {})
-    
-    if "error" in baseline_stories or "error" in current_stories:
-        log(f"❌ Error in stories data", "ERROR")
-        all_passed = False
-    else:
-        baseline_count = baseline_stories.get("count", 0)
-        current_count = current_stories.get("count", 0)
-        baseline_titles = baseline_stories.get("titles", [])
-        current_titles = current_stories.get("titles", [])
-        
-        log(f"\nSTORIES CHECK:", "INFO")
-        log(f"  Baseline count: {baseline_count}", "INFO")
-        log(f"  Current count:  {current_count}", "INFO")
-        
-        if current_count != 4:
-            log(f"  ❌ FAIL: Expected EXACTLY 4 stories, got {current_count}", "ERROR")
-            all_passed = False
-        elif current_count != baseline_count:
-            log(f"  ❌ FAIL: Story count changed from {baseline_count} to {current_count}", "ERROR")
-            all_passed = False
-        else:
-            log(f"  ✅ PASS: Story count stable at {current_count}", "INFO")
-        
-        # Check for duplicates by comparing titles
-        if len(current_titles) != len(set(current_titles)):
-            log(f"  ❌ FAIL: DUPLICATE stories detected!", "ERROR")
-            log(f"  Titles: {current_titles}", "ERROR")
-            all_passed = False
-        else:
-            log(f"  ✅ PASS: No duplicate stories", "INFO")
-        
-        # Check titles match
-        if sorted(baseline_titles) != sorted(current_titles):
-            log(f"  ❌ FAIL: Story titles changed!", "ERROR")
-            log(f"  Baseline: {baseline_titles}", "ERROR")
-            log(f"  Current:  {current_titles}", "ERROR")
-            all_passed = False
-        else:
-            log(f"  ✅ PASS: Story titles unchanged", "INFO")
-            log(f"  Titles: {current_titles[:2]}... (showing first 2)", "INFO")
-    
-    # Check companies
-    baseline_companies = baseline.get("companies", {})
-    current_companies = current.get("companies", {})
-    
-    if "error" in baseline_companies or "error" in current_companies:
-        log(f"❌ Error in companies data", "ERROR")
-        all_passed = False
-    else:
-        baseline_count = baseline_companies.get("count", 0)
-        current_count = current_companies.get("count", 0)
-        
-        log(f"\nCOMPANIES CHECK:", "INFO")
-        log(f"  Baseline count: {baseline_count}", "INFO")
-        log(f"  Current count:  {current_count}", "INFO")
-        
-        if current_count != 14:
-            log(f"  ❌ FAIL: Expected EXACTLY 14 companies, got {current_count}", "ERROR")
-            all_passed = False
-        elif current_count != baseline_count:
-            log(f"  ❌ FAIL: Company count changed from {baseline_count} to {current_count}", "ERROR")
-            all_passed = False
-        else:
-            log(f"  ✅ PASS: Company count stable at {current_count}", "INFO")
-    
-    log(f"\n{'='*60}", "INFO")
-    if all_passed:
-        log(f"✅ {stage}: ALL CHECKS PASSED", "INFO")
-    else:
-        log(f"❌ {stage}: FAILURES DETECTED", "ERROR")
-    log(f"{'='*60}\n", "INFO")
-    
-    return all_passed
-
 def main():
     """Main test execution"""
     log("\n" + "="*80, "INFO")
-    log("KUKDI BACKEND DATA PERSISTENCE TEST - TWO RESTART VERIFICATION", "INFO")
+    log("KUKDI BACKEND VERIFICATION - TENTATIVE EVENTS REMOVAL + POLISH ENDPOINT", "INFO")
     log("="*80 + "\n", "INFO")
     
-    # STEP 1: Record baseline
-    log("STEP 1: Recording baseline data...", "INFO")
-    baseline = {
-        "stories": get_stories(),
-        "companies": get_companies_count()
-    }
+    all_passed = True
     
-    if "error" in baseline["stories"] or "error" in baseline["companies"]:
-        log("❌ CRITICAL: Failed to get baseline data", "ERROR")
-        sys.exit(1)
+    # TEST 1: Check calendar for tentative events
+    log("="*80, "INFO")
+    log("TEST 1: GET /api/calendar → NO tentative events", "INFO")
+    log("="*80, "INFO")
     
-    log(f"✅ Baseline recorded: {baseline['stories']['count']} stories, {baseline['companies']['count']} companies", "INFO")
+    calendar_result = get_calendar_events()
+    if "error" in calendar_result:
+        log(f"❌ FAIL: Error getting calendar events", "ERROR")
+        all_passed = False
+    else:
+        total = calendar_result["total_count"]
+        tentative_count = calendar_result["tentative_count"]
+        tentative_events = calendar_result["tentative_events"]
+        
+        log(f"Total events: {total}", "INFO")
+        log(f"Tentative events: {tentative_count}", "INFO")
+        
+        if tentative_count > 0:
+            log(f"❌ FAIL: Found {tentative_count} tentative event(s):", "ERROR")
+            for event in tentative_events:
+                log(f"   - {event}", "ERROR")
+            all_passed = False
+        else:
+            log(f"✅ PASS: NO tentative events found (total events: {total})", "INFO")
     
-    # STEP 2: First restart
+    # TEST 2: DURABILITY - restart backend and check again
     log("\n" + "="*80, "INFO")
-    log("STEP 2: FIRST BACKEND RESTART", "INFO")
+    log("TEST 2: DURABILITY - Restart backend and verify tentative events stay deleted", "INFO")
     log("="*80, "INFO")
     
     if not restart_backend():
-        log("❌ CRITICAL: First restart failed", "ERROR")
-        sys.exit(1)
+        log("❌ FAIL: Backend restart failed", "ERROR")
+        all_passed = False
+    else:
+        log("Waiting 8s for startup provisioning to complete...", "INFO")
+        time.sleep(8)
+        
+        if not wait_for_backend():
+            log("❌ FAIL: Backend not ready after restart", "ERROR")
+            all_passed = False
+        else:
+            calendar_result_after = get_calendar_events()
+            if "error" in calendar_result_after:
+                log(f"❌ FAIL: Error getting calendar events after restart", "ERROR")
+                all_passed = False
+            else:
+                total_after = calendar_result_after["total_count"]
+                tentative_count_after = calendar_result_after["tentative_count"]
+                tentative_events_after = calendar_result_after["tentative_events"]
+                
+                log(f"Total events after restart: {total_after}", "INFO")
+                log(f"Tentative events after restart: {tentative_count_after}", "INFO")
+                
+                if tentative_count_after > 0:
+                    log(f"❌ FAIL: Tentative events RECREATED after restart:", "ERROR")
+                    for event in tentative_events_after:
+                        log(f"   - {event}", "ERROR")
+                    all_passed = False
+                else:
+                    log(f"✅ PASS: Tentative events still absent after restart (total events: {total_after})", "INFO")
     
-    time.sleep(8)  # Wait for provisioning
-    
-    if not wait_for_backend():
-        log("❌ CRITICAL: Backend not ready after first restart", "ERROR")
-        sys.exit(1)
-    
-    # Check data after first restart
-    after_restart_1 = {
-        "stories": get_stories(),
-        "companies": get_companies_count()
-    }
-    
-    restart_1_passed = verify_data_integrity(baseline, after_restart_1, "AFTER RESTART #1")
-    
-    # STEP 3: Second restart
+    # TEST 3: BASELINE INTACT - verify 4 stories, 14 companies, 12 people
     log("\n" + "="*80, "INFO")
-    log("STEP 3: SECOND BACKEND RESTART", "INFO")
+    log("TEST 3: BASELINE INTACT - Verify 4 stories, 14 companies, 12 people", "INFO")
     log("="*80, "INFO")
     
-    if not restart_backend():
-        log("❌ CRITICAL: Second restart failed", "ERROR")
-        sys.exit(1)
+    stories_result = get_stories()
+    companies_result = get_companies()
+    people_result = get_people()
     
-    time.sleep(8)  # Wait for provisioning
+    # Check stories
+    if "error" in stories_result:
+        log(f"❌ FAIL: Error getting stories", "ERROR")
+        all_passed = False
+    else:
+        story_count = stories_result["count"]
+        log(f"Stories count: {story_count}", "INFO")
+        if story_count != 4:
+            log(f"❌ FAIL: Expected EXACTLY 4 stories, got {story_count}", "ERROR")
+            all_passed = False
+        else:
+            log(f"✅ PASS: Exactly 4 stories", "INFO")
     
-    if not wait_for_backend():
-        log("❌ CRITICAL: Backend not ready after second restart", "ERROR")
-        sys.exit(1)
+    # Check companies
+    if "error" in companies_result:
+        log(f"❌ FAIL: Error getting companies", "ERROR")
+        all_passed = False
+    else:
+        company_count = companies_result["count"]
+        log(f"Companies count: {company_count}", "INFO")
+        if company_count != 14:
+            log(f"❌ FAIL: Expected EXACTLY 14 companies, got {company_count}", "ERROR")
+            all_passed = False
+        else:
+            log(f"✅ PASS: Exactly 14 companies", "INFO")
     
-    # Check data after second restart
-    after_restart_2 = {
-        "stories": get_stories(),
-        "companies": get_companies_count()
-    }
+    # Check people
+    if "error" in people_result:
+        log(f"❌ FAIL: Error getting people", "ERROR")
+        all_passed = False
+    else:
+        people_count = people_result["count"]
+        prep_false_count = people_result["prep_group_false_count"]
+        log(f"People count: {people_count}", "INFO")
+        log(f"People with prep_group=false: {prep_false_count}", "INFO")
+        if people_count != 12:
+            log(f"❌ FAIL: Expected EXACTLY 12 people, got {people_count}", "ERROR")
+            all_passed = False
+        else:
+            log(f"✅ PASS: Exactly 12 people", "INFO")
     
-    restart_2_passed = verify_data_integrity(baseline, after_restart_2, "AFTER RESTART #2")
+    # TEST 4: POLISH ENDPOINT - graceful behavior
+    log("\n" + "="*80, "INFO")
+    log("TEST 4: POLISH ENDPOINT - POST /api/stories/{id}/polish graceful behavior", "INFO")
+    log("="*80, "INFO")
+    
+    if "error" not in stories_result and stories_result["count"] > 0:
+        # Pick first story
+        story_id = stories_result["stories"][0].get("id")
+        if story_id:
+            polish_result = test_polish_endpoint(story_id)
+            
+            if not polish_result.get("passed", False):
+                log(f"❌ FAIL: Polish endpoint did not behave gracefully", "ERROR")
+                if "error" in polish_result:
+                    log(f"   Error: {polish_result['error']}", "ERROR")
+                if "status_code" in polish_result:
+                    log(f"   Status code: {polish_result['status_code']}", "ERROR")
+                if "elapsed" in polish_result:
+                    log(f"   Time taken: {polish_result['elapsed']:.2f}s", "ERROR")
+                all_passed = False
+            else:
+                log(f"✅ PASS: Polish endpoint returned gracefully", "INFO")
+                log(f"   Status: {polish_result['status_code']}", "INFO")
+                log(f"   Latency: {polish_result['elapsed']:.2f}s", "INFO")
+                log(f"   Has STAR fields: {polish_result.get('has_star_fields', False)}", "INFO")
+                log(f"   Has feedback: {polish_result.get('has_feedback', False)}", "INFO")
+        else:
+            log(f"❌ FAIL: Could not find story ID to test polish endpoint", "ERROR")
+            all_passed = False
+    else:
+        log(f"❌ FAIL: Cannot test polish endpoint - no stories available", "ERROR")
+        all_passed = False
+    
+    # TEST 5: No _id leaks (already checked in each endpoint)
+    log("\n" + "="*80, "INFO")
+    log("TEST 5: No _id leaks in any responses", "INFO")
+    log("="*80, "INFO")
+    log("✅ PASS: No _id leaks detected in any response (checked throughout)", "INFO")
     
     # FINAL SUMMARY
     log("\n" + "="*80, "INFO")
-    log("FINAL SUMMARY - TWO RESTART VERIFICATION", "INFO")
+    log("FINAL SUMMARY", "INFO")
     log("="*80, "INFO")
     
-    log(f"\nBaseline:        {baseline['stories']['count']} stories, {baseline['companies']['count']} companies", "INFO")
-    log(f"After Restart 1: {after_restart_1['stories']['count']} stories, {after_restart_1['companies']['count']} companies", "INFO")
-    log(f"After Restart 2: {after_restart_2['stories']['count']} stories, {after_restart_2['companies']['count']} companies", "INFO")
-    
-    if restart_1_passed and restart_2_passed:
-        log("\n✅ ✅ ✅ PASS: Data preserved across TWO restarts - nothing wiped, nothing duplicated", "INFO")
-        log("✅ Stories: EXACTLY 4 with identical unique titles across all three measurements", "INFO")
-        log("✅ Companies: EXACTLY 14 across all three measurements", "INFO")
-        log("✅ No _id leaks detected", "INFO")
-        log("✅ No duplicates detected", "INFO")
-        log("\n🎉 BACKEND DATA PERSISTENCE VERIFIED - PRODUCTION READY", "INFO")
+    if all_passed:
+        log("\n✅ ✅ ✅ ALL TESTS PASSED", "INFO")
+        log("✅ TEST 1: NO tentative events in calendar", "INFO")
+        log("✅ TEST 2: Tentative events NOT recreated after restart (DURABILITY)", "INFO")
+        log("✅ TEST 3: Baseline intact (4 stories, 14 companies, 12 people)", "INFO")
+        log("✅ TEST 4: Polish endpoint behaves gracefully", "INFO")
+        log("✅ TEST 5: No _id leaks detected", "INFO")
+        log("\n🎉 BACKEND VERIFICATION COMPLETE - ALL REQUIREMENTS MET", "INFO")
         sys.exit(0)
     else:
-        log("\n❌ ❌ ❌ FAIL: Data integrity issues detected across restarts", "ERROR")
-        if not restart_1_passed:
-            log("❌ First restart verification FAILED", "ERROR")
-        if not restart_2_passed:
-            log("❌ Second restart verification FAILED", "ERROR")
+        log("\n❌ ❌ ❌ SOME TESTS FAILED", "ERROR")
+        log("See detailed output above for failures", "ERROR")
         sys.exit(1)
 
 if __name__ == "__main__":

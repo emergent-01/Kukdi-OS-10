@@ -19,6 +19,7 @@ export default function Stories() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [polishing, setPolishing] = useState(false);
+  const [polishError, setPolishError] = useState("");
   const [saving, setSaving] = useState(false);
   const [matchQuery, setMatchQuery] = useState("");
   const [matchResults, setMatchResults] = useState(null);
@@ -88,10 +89,13 @@ export default function Stories() {
 
   const polish = async () => {
     setPolishing(true);
+    setPolishError("");
     try {
       const updated = await api.polishStory(active.id);
       setActive(updated);
       load();
+    } catch (e) {
+      setPolishError("I couldn't finish polishing this just now. Let's try again in a moment.");
     } finally {
       setPolishing(false);
     }
@@ -244,7 +248,7 @@ export default function Stories() {
       </div>
 
       {/* Story editor / polisher */}
-      <Modal open={!!active} onClose={() => setActive(null)} title={active?.title || "Story"} testId="story-modal">
+      <Modal open={!!active} onClose={() => { setActive(null); setPolishError(""); }} title={active?.title || "Story"} testId="story-modal">
         {active && (
           <>
             <Field label="Title"><input className={inputClass} value={active.title} onChange={(e) => setActive({ ...active, title: e.target.value })} data-testid="story-title" /></Field>
@@ -308,6 +312,17 @@ export default function Stories() {
               </button>
               <PrimaryButton onClick={saveActive} data-testid="story-save" disabled={saving}>{saving ? "Saving…" : "Save"}</PrimaryButton>
             </div>
+
+            {polishError && (
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-4 text-[#8A8F8C] italic font-editorial text-lg leading-snug"
+                data-testid="story-polish-error"
+              >
+                {polishError}
+              </motion.p>
+            )}
           </>
         )}
       </Modal>

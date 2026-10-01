@@ -85,7 +85,7 @@ export const api = {
   stories: () => http.get("/stories").then((r) => r.data),
   createStory: (body) => http.post("/stories", body).then((r) => r.data),
   updateStory: (id, body) => http.patch(`/stories/${id}`, body).then((r) => r.data),
-  polishStory: (id) => http.post(`/stories/${id}/polish`).then((r) => r.data),
+  polishStory: (id) => http.post(`/stories/${id}/polish`, {}, { timeout: 30000 }).then((r) => r.data),
   matchStories: (question) => http.post("/stories/match", { question }).then((r) => r.data),
   storyCoverage: () => http.get("/stories/coverage").then((r) => r.data),
   markStoryUsed: (id, body) => http.post(`/stories/${id}/used`, body).then((r) => r.data),
